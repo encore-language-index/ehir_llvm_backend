@@ -101,7 +101,7 @@ size_t ehir_llvm_next_stage_id(void) {
 #include "runtime_ir.h"
 extern char *encore_str_data(ehir_str value);
 extern size_t encore_str_size(ehir_str value);
-extern ehir_str encore_str_from_buffer(const char *bytes, size_t len);
+extern ehir_str encore_str_from_buffer(const void *bytes, size_t len);
 size_t ehir_llvm_declaration_index(ehir_str declarations) {
     return (size_t)ehir_ir_index_new(encore_str_data(declarations), encore_str_size(declarations));
 }
