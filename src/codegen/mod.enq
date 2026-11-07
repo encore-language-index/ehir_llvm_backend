@@ -9,7 +9,7 @@ import std::time::perf_counter_ms
 import std::vec::{Vec, vec_singleton}
 
 import ehir_core::{PreparationOutcome, enum_value, parse_module_bundle_text, prepare_module}
-import ehir_core::core::{BinaryOpKind, Block, CallInstruction, Directive, EdgeInstruction, EhirDocumentation, EhirImport, EnumVariant, FieldSelector, FnDirective, Instruction, MatchArm, MatchInstruction, Module, ModuleBundle, Parameter, PhiPair, RepresentationKind, SwitchCase, Terminator, TraitMethod, Type, ValueKind, Variable, add_edge, alias, async_fn_item, await_value, binary, block, br_term, call, cbr_term, cfree, drop_value, ehir_documentation, ehir_import, enum_directive, enum_variant, extern_fn_item, fn_item, function_body_identity, gep, getfield, getfieldptr, getptr, halloc, hfree, hrealloc, impl_directive, lceos, lcpos, lcsos, load, local_place_type, make_module, make_module_bundle, make_module_with_metadata, mangle_plain_type_name, mangle_type_name, match_arm, match_term, memory_value_type, param, pcast, phi, phi_pair, put, raw_type, remove_edge, resource_struct_directive, ret_term, retain_value, salloc, setfield, sgetfield, sgetfieldptr, store, struct_directive, switch_case, switch_term, trait_directive, trait_method, unreachable_term}
+import ehir_core::core::{BinaryOpKind, Block, CallInstruction, Directive, EdgeInstruction, EhirDocumentation, EhirImport, EnumVariant, FieldSelector, FnDirective, Instruction, MatchArm, MatchInstruction, Module, ModuleBundle, Parameter, PhiPair, RepresentationKind, SwitchCase, Terminator, TraitMethod, Type, ValueKind, Variable, YieldInstruction, add_edge, alias, async_fn_item, await_value, binary, block, br_term, call, cbr_term, cfree, drop_value, ehir_documentation, ehir_import, enum_directive, enum_variant, extern_fn_item, fn_item, function_body_identity, gep, getfield, getfieldptr, getptr, halloc, hfree, hrealloc, impl_directive, lceos, lcpos, lcsos, load, local_place_type, make_module, make_module_bundle, make_module_with_metadata, mangle_plain_type_name, mangle_type_name, match_arm, match_term, memory_value_type, param, pcast, phi, phi_pair, put, raw_type, remove_edge, resource_struct_directive, ret_term, retain_value, salloc, setfield, sgetfield, sgetfieldptr, store, struct_directive, switch_case, switch_term, trait_directive, trait_method, unreachable_term}
 
 fn concat_instructions(left: Vec[LLVMInstruction], right: Vec[LLVMInstruction]) -> Vec[LLVMInstruction] {
     let mut out = Vec[LLVMInstruction]::new()
@@ -953,13 +953,13 @@ fn append_lowered_trait_dispatch_functions(builder: usize, directives: frozen Ve
         match directive {
             Directive::Trait(item) => {
                 for dynamic in dynamic_trait_instances(concrete_types, item.name, item.generics.len()) {
-                    any = append_unique_functions(builder, vec_singleton(odr_function(lower_dyn_ownership_function(directives, dynamic, false))), seen, any, declaration_builder)
-                    any = append_unique_functions(builder, vec_singleton(odr_function(lower_dyn_ownership_function(directives, dynamic, true))), seen, any, declaration_builder)
-                    any = append_unique_functions(builder, vec_singleton(odr_function(lower_dyn_edge_function(directives, dynamic, true))), seen, any, declaration_builder)
-                    any = append_unique_functions(builder, vec_singleton(odr_function(lower_dyn_edge_function(directives, dynamic, false))), seen, any, declaration_builder)
+                    any = append_unique_functions(builder, vec_singleton(odr_function(lower_dyn_ownership_function(directives, dynamic, false, concrete_types))), seen, any, declaration_builder)
+                    any = append_unique_functions(builder, vec_singleton(odr_function(lower_dyn_ownership_function(directives, dynamic, true, concrete_types))), seen, any, declaration_builder)
+                    any = append_unique_functions(builder, vec_singleton(odr_function(lower_dyn_edge_function(directives, dynamic, true, concrete_types))), seen, any, declaration_builder)
+                    any = append_unique_functions(builder, vec_singleton(odr_function(lower_dyn_edge_function(directives, dynamic, false, concrete_types))), seen, any, declaration_builder)
                     for template in item.methods {
                         let method = specialize_trait_method(template, item.generics, dynamic.generics)
-                        any = append_unique_functions(builder, vec_singleton(odr_function(lower_trait_dispatch_function(directives, dynamic, method))), seen, any, declaration_builder)
+                        any = append_unique_functions(builder, vec_singleton(odr_function(lower_trait_dispatch_function(directives, dynamic, method, concrete_types))), seen, any, declaration_builder)
                     }
                 }
             }
@@ -970,7 +970,8 @@ fn append_lowered_trait_dispatch_functions(builder: usize, directives: frozen Ve
     ret any
 }
 
-fn lower_dyn_ownership_function(directives: frozen Vec[Directive], dyn_type: frozen Type, retain: bool) -> LLVMFunction {
+fn lower_dyn_ownership_function(directives: frozen Vec[Directive], dyn_type: frozen Type, retain: bool,
+    concrete_types: frozen Vec[Type],) -> LLVMFunction {
     let dyn_llvm_type = lower_type(dyn_type)
     let self_value = reg("self", dyn_llvm_type)
     let raw_data = reg("data", ptr_type(i8_type()))
@@ -978,14 +979,15 @@ fn lower_dyn_ownership_function(directives: frozen Vec[Directive], dyn_type: fro
     let mut entry_instructions = Vec[LLVMInstruction]::new()
     entry_instructions.push(llvm_inst_extractvalue(raw_data, self_value, "0"))
     entry_instructions.push(llvm_inst_extractvalue(type_id, self_value, "1"))
-    let implementations = dynamic_trait_implementations(directives, dyn_type, "")
+    let implementations = dynamic_trait_implementations(directives, dyn_type, "", concrete_types)
     let mut blocks = Vec[LLVMBasicBlock]::new()
     if implementations.len() == 0_usize {
         blocks.push(llvm_block("entry", entry_instructions, llvm_term_ret_void()))
     } else {
         blocks.push(llvm_block("entry", entry_instructions, llvm_term_br("check_0")))
         let mut index = 0_usize
-        for concrete in implementations {
+        for implementation in implementations {
+            let concrete = implementation.typ
             let suffix = Debug::fmt(index)
             let check_name = "check_" + suffix
             let action_name = "action_" + suffix
@@ -1009,6 +1011,12 @@ fn lower_dyn_ownership_function(directives: frozen Vec[Directive], dyn_type: fro
                 drop_symbol(concrete)
             }
             instructions.push(llvm_inst_call(Option[LLVMValue]::None, void_type(), callee, vec_singleton(concrete_value)))
+            instructions.push(llvm_inst_call(Option[LLVMValue]::None, void_type(), if retain {
+                        "encore_box_retain"
+                    } else {
+                        "encore_box_drop"
+                    }
+                    , vec_singleton(raw_data),))
             blocks.push(llvm_block(action_name, instructions, llvm_term_ret_void()))
             index = index + 1_usize
         }
@@ -1023,7 +1031,7 @@ fn lower_dyn_ownership_function(directives: frozen Vec[Directive], dyn_type: fro
 }
 
 fn lower_dyn_edge_function(directives: frozen Vec[Directive], dyn_type: frozen Type,
-    adding: bool,) -> LLVMFunction {
+    adding: bool, concrete_types: frozen Vec[Type],) -> LLVMFunction {
     let dyn_llvm_type = lower_type(dyn_type)
     let raw_ptr = ptr_type(i8_type())
     let owner = reg("owner", raw_ptr)
@@ -1033,14 +1041,15 @@ fn lower_dyn_edge_function(directives: frozen Vec[Directive], dyn_type: frozen T
     let mut entry_instructions = Vec[LLVMInstruction]::new()
     entry_instructions.push(llvm_inst_extractvalue(raw_data, self_value, "0"))
     entry_instructions.push(llvm_inst_extractvalue(type_id, self_value, "1"))
-    let implementations = dynamic_trait_implementations(directives, dyn_type, "")
+    let implementations = dynamic_trait_implementations(directives, dyn_type, "", concrete_types)
     let mut blocks = Vec[LLVMBasicBlock]::new()
     if implementations.len() == 0_usize {
         blocks.push(llvm_block("entry", entry_instructions, llvm_term_ret_void()))
     } else {
         blocks.push(llvm_block("entry", entry_instructions, llvm_term_br("check_0")))
         let mut index = 0_usize
-        for concrete in implementations {
+        for implementation in implementations {
+            let concrete = implementation.typ
             let suffix = Debug::fmt(index)
             let check_name = "check_" + suffix
             let action_name = "action_" + suffix
@@ -1096,40 +1105,53 @@ fn specialize_trait_method(method: frozen TraitMethod, params: frozen Vec[Type],
         substitute_generic_type(method.ret_type, params, args),)
 }
 
+struct DynamicTraitImplementation {
+    typ: Type
+    args: Vec[Type]
+}
+
 fn dynamic_trait_implementations(directives: frozen Vec[Directive], dynamic: frozen Type,
-    method_name: str,) -> Vec[Type] {
-    let mut implementations = Vec[Type]::new()
+    method_name: str, concrete_types: frozen Vec[Type],) -> Vec[DynamicTraitImplementation] {
+    let mut implementations = Vec[DynamicTraitImplementation]::new()
     for directive in directives {
         match directive {
             Directive::Impl(item) => {
                 if sanitize_symbol(dynamic.name) != "dyn_" + sanitize_symbol(item.trait_name)
-                || item.generics.len() != 0 || item.trait_args.len() != dynamic.generics.len() {
+                || item.trait_args.len() != dynamic.generics.len() {
                     continue
                 }
-                let mut matching = true
-                let mut index = 0_usize
-                for argument in item.trait_args {
-                    match dynamic.generics.get(index) {
-                        Some(expected) => {
-                            if mangle_type_name(argument) != mangle_type_name(expected) {
-                                matching = false
-                            }
-                        }
-                        None => {
-                            matching = false
+                let mut found = method_name == ""
+                for method in item.methods {
+                    if method.name == method_name {
+                        found = true
+                    }
+                }
+                if !found {
+                    continue
+                }
+                let mut candidates = Vec[Type]::new()
+                if item.generics.is_empty() {
+                    candidates.push(clone_type(item.for_type))
+                } else {
+                    for concrete in concrete_types {
+                        if concrete.name == item.for_type.name && concrete.representation == item.for_type.representation {
+                            candidates.push(clone_type(concrete))
                         }
                     }
-                    index += 1
                 }
-                if !matching {
-                    continue
-                }
-                if method_name == "" {
-                    implementations.push(clone_type(item.for_type))
-                } else {
-                    for method in item.methods {
-                        if method.name == method_name {
-                            implementations.push(clone_type(item.for_type))
+                for concrete in candidates {
+                    match dynamic_trait_binding(item.for_type, item.generics, item.trait_args, dynamic, concrete) {
+                        Some(_) => {
+                            implementations.push(DynamicTraitImplementation {
+                                    concrete, if item.generics.is_empty() {
+                                        Vec[Type]::new()
+                                    } else {
+                                        clone_codegen_types(concrete.generics)
+                                    }
+                                }
+                            )
+                        }
+                        None => {
                         }
                     }
                 }
@@ -1141,7 +1163,37 @@ fn dynamic_trait_implementations(directives: frozen Vec[Directive], dynamic: fro
     ret implementations
 }
 
-fn lower_trait_dispatch_function(directives: frozen Vec[Directive], dyn_type: frozen Type, method: frozen TraitMethod) -> LLVMFunction {
+fn dynamic_trait_binding(target: frozen Type, parameters: frozen Vec[Type], trait_args: frozen Vec[Type],
+    dynamic: frozen Type, concrete: frozen Type,) -> Option[ImplMethodBinding] {
+    if target.name != concrete.name || target.representation != concrete.representation || trait_args.len() != dynamic.generics.len() {
+        ret Option[ImplMethodBinding]::None
+    }
+    match bind_impl_method(target, parameters, Vec[Type]::new(), concrete.generics) {
+        Some(binding) => {
+            let mut index = 0_usize
+            for argument in trait_args {
+                match dynamic.generics.get(index) {
+                    Some(expected) => {
+                        if mangle_type_name(substitute_generic_type(argument, binding.params, binding.args)) != mangle_type_name(expected) {
+                            ret Option[ImplMethodBinding]::None
+                        }
+                    }
+                    None => {
+                        ret Option[ImplMethodBinding]::None
+                    }
+                }
+                index += 1_usize
+            }
+            ret Option[ImplMethodBinding]::Some(binding)
+        }
+        None => {
+            ret Option[ImplMethodBinding]::None
+        }
+    }
+}
+
+fn lower_trait_dispatch_function(directives: frozen Vec[Directive], dyn_type: frozen Type, method: frozen TraitMethod,
+    concrete_types: frozen Vec[Type],) -> LLVMFunction {
     let dyn_llvm_type = lower_type(dyn_type)
     let ret_type = lower_type(method.ret_type)
     let mut params_data = Vec[LLVMParam]::new()
@@ -1166,7 +1218,7 @@ fn lower_trait_dispatch_function(directives: frozen Vec[Directive], dyn_type: fr
     entry_instructions.push(llvm_inst_extractvalue(raw_data, self_value, "0"))
     entry_instructions.push(llvm_inst_extractvalue(type_id, self_value, "1"))
 
-    let implementations = dynamic_trait_implementations(directives, dyn_type, method.name)
+    let implementations = dynamic_trait_implementations(directives, dyn_type, method.name, concrete_types)
 
     let mut blocks = Vec[LLVMBasicBlock]::new()
     if implementations.len() == 0_usize {
@@ -1174,7 +1226,8 @@ fn lower_trait_dispatch_function(directives: frozen Vec[Directive], dyn_type: fr
     } else {
         blocks.push(llvm_block("entry", entry_instructions, llvm_term_br("check_0")))
         let mut index = 0_usize
-        for concrete in implementations {
+        for implementation in implementations {
+            let concrete = implementation.typ
             let suffix = Debug::fmt(index)
             let check_name = "check_" + suffix
             let dispatch_name = "dispatch_" + suffix
@@ -1195,7 +1248,11 @@ fn lower_trait_dispatch_function(directives: frozen Vec[Directive], dyn_type: fr
             dispatch_instructions.push(llvm_inst_cast("bitcast", typed_data, raw_data))
             dispatch_instructions.push(llvm_inst_load(concrete_value, typed_data))
             let args = concat_values(vec_singleton(concrete_value), call_tail)
-            let callee = sanitize_symbol(concrete.name + "::" + method.name)
+            let callee = if implementation.args.is_empty() {
+                sanitize_symbol(concrete.name + "::" + method.name)
+            } else {
+                generic_symbol(concrete.name + "::" + method.name, implementation.args)
+            }
             if is_unit_value_type(method.ret_type) {
                 dispatch_instructions.push(llvm_inst_call(Option[LLVMValue]::None, void_type(), callee, args))
                 blocks.push(llvm_block(dispatch_name, dispatch_instructions, llvm_term_ret_void()))
@@ -2487,13 +2544,13 @@ fn collect_generic_calls(directives: frozen Vec[Directive]) -> Vec[GenericCall] 
         match directive {
             Directive::Function(function) => {
                 if function.generics.len() == 0_usize {
-                    collect_direct_generic_calls(out, seen, function)
+                    collect_direct_generic_calls(out, seen, function, directives)
                 }
             }
             Directive::Impl(item) => {
                 if item.generics.len() == 0_usize {
                     for method in item.methods {
-                        collect_direct_generic_calls(out, seen, method)
+                        collect_direct_generic_calls(out, seen, method, directives)
                     }
                 }
             }
@@ -2507,7 +2564,8 @@ fn collect_generic_calls(directives: frozen Vec[Directive]) -> Vec[GenericCall] 
     ret out
 }
 
-fn collect_direct_generic_calls(out: mut Vec[GenericCall], seen: usize, function: FnDirective) ->() {
+fn collect_direct_generic_calls(out: mut Vec[GenericCall], seen: usize, function: FnDirective,
+    directives: frozen Vec[Directive],) ->() {
     let mut block_index = 0_usize
     while block_index < function.blocks.len() {
         let block_handle = unsafe {
@@ -2520,7 +2578,7 @@ fn collect_direct_generic_calls(out: mut Vec[GenericCall], seen: usize, function
             }
             let mut instruction_index = 0_usize
             while instruction_index < block_item.instructions.len() {
-                collect_direct_generic_call(out, seen, block_item.instructions.get_handle(instruction_index))
+                collect_direct_generic_call(out, seen, block_item.instructions.get_handle(instruction_index), directives)
                 instruction_index = instruction_index + 1_usize
             }
         }
@@ -2529,18 +2587,26 @@ fn collect_direct_generic_calls(out: mut Vec[GenericCall], seen: usize, function
     ret()
 }
 
-fn collect_direct_generic_call(out: mut Vec[GenericCall], seen: usize, instruction_handle: usize) ->() {
+fn collect_direct_generic_call(out: mut Vec[GenericCall], seen: usize, instruction_handle: usize,
+    directives: frozen Vec[Directive],) ->() {
     unsafe {
         unsafe ehir {
             instruction_ptr: Instruction * = pcast instruction_handle: usize, Instruction *
             instruction: Instruction = load instruction_ptr: Instruction *
         }
         match instruction {
+            Instruction::PtrCast(data) => {
+                if is_dyn_type(data.target_type) {
+                    collect_dynamic_generic_calls(out, seen, directives, required_variable_type(data.src), data.target_type)
+                }
+            }
             Instruction::Call(data) => {
                 if data.generics.len() > 0_usize {
                     let is_spawn = required_variable_type(data.out).name == "JoinHandle" && is_thread_spawn_name(data.name)
                     let name = if is_spawn {
                         thread_spawn_target(data.name)
+                    } elif has_prefix(data.name, "__ehir_generator_close_address__") {
+                        data.name.slice_bytes(32_usize, data.name.byte_len() - 32_usize)
                     } else {
                         data.name
                     }
@@ -2658,7 +2724,7 @@ fn expand_generic_calls(directives: frozen Vec[Directive], calls: sending Vec[Ge
                 for template_position in generic_template_positions(templates, current_name) {
                     match directives.get(template_position) {
                         Some(directive) => {
-                            expand_generic_call_in_directive(expanded, seen, directive, current_name, current_args)
+                            expand_generic_call_in_directive(expanded, seen, directive, current_name, current_args, directives)
 
                         }
                         None => {
@@ -2679,11 +2745,11 @@ fn expand_generic_calls(directives: frozen Vec[Directive], calls: sending Vec[Ge
 }
 
 fn expand_generic_call_in_directive(out: mut Vec[GenericCall], seen: usize,
-    directive: frozen Directive, name: str, args: frozen Vec[Type],) ->() {
+    directive: frozen Directive, name: str, args: frozen Vec[Type], all_directives: frozen Vec[Directive],) ->() {
     match directive {
         Directive::Function(function) => {
             if generic_function_name_matches("" + function.name, name) && function.generics.len() == args.len() {
-                collect_nested_generic_calls(out, seen, function, function.generics, args)
+                collect_nested_generic_calls(out, seen, function, function.generics, args, all_directives)
             }
         }
         Directive::Impl(item) => {
@@ -2695,7 +2761,7 @@ fn expand_generic_call_in_directive(out: mut Vec[GenericCall], seen: usize,
                         if full_name == name {
                             match bind_impl_method(item.for_type, item.generics, method.generics, args) {
                                 Some(binding) => {
-                                    collect_nested_generic_calls(out, seen, method, binding.params, binding.args)
+                                    collect_nested_generic_calls(out, seen, method, binding.params, binding.args, all_directives)
                                 }
                                 None => {
                                 }
@@ -2715,7 +2781,7 @@ fn expand_generic_call_in_directive(out: mut Vec[GenericCall], seen: usize,
 }
 
 fn collect_nested_generic_calls(out: mut Vec[GenericCall], seen: usize, function: frozen FnDirective,
-    params: frozen Vec[Type], args: frozen Vec[Type],) ->() {
+    params: frozen Vec[Type], args: frozen Vec[Type], directives: frozen Vec[Directive],) ->() {
     let mut block_index = 0_usize
     while block_index < function.blocks.len() {
         match function.blocks.get(block_index) {
@@ -2724,7 +2790,7 @@ fn collect_nested_generic_calls(out: mut Vec[GenericCall], seen: usize, function
                 while instruction_index < block_item.instructions.len() {
                     match block_item.instructions.get(instruction_index) {
                         Some(instruction) => {
-                            collect_nested_generic_call(out, seen, instruction, params, args)
+                            collect_nested_generic_call(out, seen, instruction, params, args, directives)
                         }
                         None => {
                         }
@@ -2741,14 +2807,23 @@ fn collect_nested_generic_calls(out: mut Vec[GenericCall], seen: usize, function
 }
 
 fn collect_nested_generic_call(out: mut Vec[GenericCall], seen: usize,
-    instruction: frozen Instruction, params: frozen Vec[Type], args: frozen Vec[Type],) ->() {
+    instruction: frozen Instruction, params: frozen Vec[Type], args: frozen Vec[Type], directives: frozen Vec[Directive],) ->() {
     match instruction {
+        Instruction::PtrCast(data) => {
+            if is_dyn_type(data.target_type) {
+                collect_dynamic_generic_calls(out, seen, directives,
+                    substitute_generic_type(required_variable_type(data.src), params, args),
+                    substitute_generic_type(data.target_type, params, args),)
+            }
+        }
         Instruction::Call(data) => {
             let data_name = "" + data.name
             let is_spawn = required_variable_type(data.out).name == "JoinHandle" &&
             is_thread_spawn_name(data_name)
             let call_name = if is_spawn {
                 thread_spawn_target(data_name)
+            } elif has_prefix(data_name, "__ehir_generator_close_address__") {
+                data_name.slice_bytes(32_usize, data_name.byte_len() - 32_usize)
             } else {
                 data_name
             }
@@ -2793,6 +2868,38 @@ fn collect_nested_generic_call(out: mut Vec[GenericCall], seen: usize,
         }
     }
     ret()
+}
+
+// A dynamic cast retains a concrete implementation even when no source call
+// names its methods. Discover those specializations alongside ordinary generic
+// calls so their nested calls and ownership types reach program support too.
+fn collect_dynamic_generic_calls(out: mut Vec[GenericCall], seen: usize, directives: frozen Vec[Directive],
+    concrete: frozen Type, dynamic: frozen Type,) ->() {
+    if concrete.generics.is_empty() {
+        ret()
+    }
+    for directive in directives {
+        match directive {
+            Directive::Impl(item) => {
+                if item.generics.is_empty() || sanitize_symbol(dynamic.name) != "dyn_" + sanitize_symbol(item.trait_name) {
+                    continue
+                }
+                match dynamic_trait_binding(item.for_type, item.generics, item.trait_args, dynamic, concrete) {
+                    Some(_) => {
+                        for method in item.methods {
+                            if method.generics.is_empty() {
+                                remember_generic_call(out, seen, item.for_type.name + "::" + method.name, concrete.generics)
+                            }
+                        }
+                    }
+                    None => {
+                    }
+                }
+            }
+            _ => {
+            }
+        }
+    }
 }
 
 fn remember_generic_call(out: mut Vec[GenericCall], seen: usize, name: str,
@@ -2981,10 +3088,10 @@ fn generic_function_template_for_call(function: FnDirective, call_name: str) -> 
     if function.name == call_name {
         ret function
     }
-    if function.is_async {
-        ret async_fn_item(call_name, function.generics, function.params, function.ret_type, function.blocks)
+    ret FnDirective {
+        call_name, function.generics, function.params, function.ret_type,
+        function.blocks, function.is_extern, function.is_async, function.generator_type
     }
-    ret fn_item(call_name, function.generics, function.params, function.ret_type, function.blocks)
 }
 
 fn combined_impl_method_generics(impl_generics: frozen Vec[Type],
@@ -3169,20 +3276,20 @@ fn specialize_function_with_params(function: frozen FnDirective, params: frozen 
         }
         specialized_blocks.push(block("" + block_item.name, instructions, terminator))
     }
-    if function.is_extern {
-        ret extern_fn_item(template_name, Vec[Type]::new(), specialized_params,
-            substitute_generic_type(function.ret_type, params, args),)
+    let generator_type = match function.generator_type {
+        Some(value) => Option[Type]::Some(substitute_generic_type(value, params, args))
+        None => Option[Type]::None
     }
-    if function.is_async {
-        ret async_fn_item(
-            generic_symbol(template_name, args),
-            Vec[Type]::new(),
-            specialized_params,
-            substitute_generic_type(function.ret_type, params, args),
-            specialized_blocks,
-        )
+    ret FnDirective {
+        if function.is_extern {
+            template_name
+        } else {
+            generic_symbol(template_name, args)
+        }
+        ,
+        Vec[Type]::new(), specialized_params, substitute_generic_type(function.ret_type, params, args),
+        specialized_blocks, function.is_extern, function.is_async, generator_type
     }
-    ret fn_item(generic_symbol(template_name, args), Vec[Type]::new(), specialized_params, substitute_generic_type(function.ret_type, params, args), specialized_blocks)
 }
 
 fn specialize_instruction(instruction: frozen Instruction, params: frozen Vec[Type], args: frozen Vec[Type]) -> Instruction {
@@ -3321,6 +3428,27 @@ fn specialize_instruction(instruction: frozen Instruction, params: frozen Vec[Ty
             }
             ret call(specialize_variable(data.out, params, args), call_name, generics, values,
                 call_is_unsafe,)
+        }
+        Instruction::Yield(data) => {
+            let mut cleanups = Vec[CallInstruction]::new()
+            for cleanup in data.cleanups {
+                let mut arguments = Vec[Variable]::new()
+                for argument in cleanup.args {
+                    arguments.push(specialize_variable(argument, params, args))
+                }
+                let mut generics = Vec[Type]::new()
+                for generic in cleanup.generics {
+                    generics.push(substitute_generic_type(generic, params, args))
+                }
+                cleanups.push(CallInstruction {
+                        specialize_variable(cleanup.out, params, args), cleanup.name, generics, arguments, cleanup.is_unsafe
+                    }
+                )
+            }
+            ret Instruction::Yield(YieldInstruction {
+                    specialize_variable(data.value, params, args), cleanups
+                }
+            )
         }
         Instruction::Await(data) => {
             ret await_value(specialize_variable(data.out, params, args), specialize_variable(data.future, params, args))
@@ -5472,6 +5600,9 @@ fn lower_instruction(instruction: frozen Instruction, instruction_scope: str, lo
             if call_data.name == "__ehir_call_indirect" {
                 ret lower_indirect_call(call_data)
             }
+            if has_prefix(call_data.name, "__ehir_generator_close_address__") {
+                ret lower_generator_close_address(call_data)
+            }
             if has_prefix(call_data.name, "__ehir_function_address__") {
                 ret lower_function_address(call_data)
             }
@@ -5488,6 +5619,9 @@ fn lower_instruction(instruction: frozen Instruction, instruction_scope: str, lo
             let call_args: Vec[Variable] = call_data.args
             let lowered: LLVMInstruction = lower_call(out_var, callee_name, call_data.generics, call_args)
             ret vec_singleton(lowered)
+        }
+        Yield(_) => {
+            ret unsupported_instruction("yield must be lowered before LLVM emission")
         }
         Await(await_data) => {
             backend_invariant_error("internal compiler error: unlowered EHIR await for '" + await_data.out.name + "' reached LLVM codegen")
@@ -5737,7 +5871,7 @@ fn lower_instruction(instruction: frozen Instruction, instruction_scope: str, lo
                 let mut instructions = Vec[LLVMInstruction]::new()
                 instructions.push(llvm_inst_gep(size_ptr, concrete_type, const_text("null", concrete_ptr_type), vec_singleton(const_text("1", i64_type())), false))
                 instructions.push(llvm_inst_cast("ptrtoint", size, size_ptr))
-                instructions.push(llvm_inst_call(Option[LLVMValue]::Some(raw_box), ptr_type(i8_type()), "__ehir_hrealloc", concat_values(vec_singleton(const_text("null", ptr_type(i8_type()))), vec_singleton(size))))
+                instructions.push(llvm_inst_call(Option[LLVMValue]::Some(raw_box), ptr_type(i8_type()), "encore_box_alloc", vec_singleton(size)))
                 instructions.push(llvm_inst_cast("bitcast", typed_box, raw_box))
                 instructions.push(llvm_inst_store(src_value, typed_box))
                 instructions.push(llvm_inst_insertvalue(with_data, const_text("undef", lower_type(target_type)), raw_box, "0"))
@@ -7297,7 +7431,9 @@ fn compact_package_codegen_closes_only_needed_declarations() -> bool {
         let serial = emit_compact_unit_codegen_selected_parallel(functions, target.0, target.1, vec![0_usize, 1_usize], 1_usize)
         let parallel = emit_compact_unit_codegen_selected_parallel(functions, target.0, target.1, vec![0_usize, 1_usize], 2_usize)
         let declarations = match compact_unit_codegen_declarations(functions, target.0, target.1) {
-            Ok(value) => value Err(_) => { ret false }
+            Ok(value) => value Err(_) => {
+                ret false
+            }
         }
         let cached = emit_compact_unit_codegen_with_declarations(functions, target.0, target.1, vec![0_usize, 1_usize], 2_usize, declarations)
         if serial.len() != 2_usize || parallel.len() != 2_usize || cached.len() != 2_usize {
@@ -7346,4 +7482,17 @@ fn compact_package_codegen_keeps_owned_closures_with_function() -> bool {
     ret module.diagnostic.is_empty() && module.ir.contains("define i32 @factory") &&
     module.ir.contains("define i32 @" + closure + "__handle") &&
     function_body_identity("owner", "Left", "read") != function_body_identity("owner", "Right", "read")
+}
+
+fn lower_generator_close_address(data: frozen CallInstruction) -> Vec[LLVMInstruction] {
+    let prefix = "__ehir_generator_close_address__"
+    let target = data.name.slice_bytes(prefix.byte_len(), data.name.byte_len() - prefix.byte_len())
+    let symbol = if data.generics.is_empty() {
+        function_symbol(target)
+    } else {
+        generic_symbol(target, data.generics)
+    }
+    let signature = "void (" + type_text(pointer_int_type()) + ")*"
+    let pointer = const_text("@" + symbol, llvm_raw_type(LLVMTypeKind::POINTER, signature))
+    ret vec_singleton(llvm_inst_cast("ptrtoint", lower_variable(data.out), pointer))
 }
