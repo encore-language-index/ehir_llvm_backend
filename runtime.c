@@ -58,11 +58,18 @@ size_t encore_codegen_rss_kb(void) {
 }
 
 /* Errors belong to an invocation/thread and are returned by the library API. */
-typedef struct ehir_str_object ehir_str_object;
-typedef struct { ehir_str_object *object; } ehir_str;
-extern void encore_str_retain(ehir_str value);
-extern void encore_str_drop(ehir_str value);
-extern ehir_str encore_empty_str(void);
+/* The include path is supplied by Encore. The relative fallback also
+ * supports the .14 bootstrap and SDK sibling-directory development. */
+#if defined(__has_include)
+# if __has_include(<runtime_abi.h>)
+#  include <runtime_abi.h>
+# else
+#  include "../core/runtime_abi.h"
+# endif
+#else
+# include "../core/runtime_abi.h"
+#endif
+typedef encore_str ehir_str;
 static ENCORE_CODEGEN_THREAD_LOCAL ehir_str ehir_codegen_error = {NULL};
 void ehir_codegen_clear_error(void) {
     encore_str_drop(ehir_codegen_error);
@@ -94,7 +101,7 @@ size_t ehir_llvm_next_stage_id(void) {
 #include "runtime_ir.h"
 extern char *encore_str_data(ehir_str value);
 extern size_t encore_str_size(ehir_str value);
-extern ehir_str encore_str_from_buffer(const char *bytes, size_t len);
+extern ehir_str encore_str_from_buffer(const void *bytes, size_t len);
 size_t ehir_llvm_declaration_index(ehir_str declarations) {
     return (size_t)ehir_ir_index_new(encore_str_data(declarations), encore_str_size(declarations));
 }
