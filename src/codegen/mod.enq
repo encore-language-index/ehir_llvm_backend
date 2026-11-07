@@ -1122,9 +1122,13 @@ fn dynamic_trait_implementations(directives: frozen Vec[Directive], dynamic: fro
                 }
                 let mut found = method_name == ""
                 for method in item.methods {
-                    if method.name == method_name { found = true }
+                    if method.name == method_name {
+                        found = true
+                    }
                 }
-                if !found { continue }
+                if !found {
+                    continue
+                }
                 let mut candidates = Vec[Type]::new()
                 if item.generics.is_empty() {
                     candidates.push(clone_type(item.for_type))
@@ -1139,10 +1143,16 @@ fn dynamic_trait_implementations(directives: frozen Vec[Directive], dynamic: fro
                     match dynamic_trait_binding(item.for_type, item.generics, item.trait_args, dynamic, concrete) {
                         Some(_) => {
                             implementations.push(DynamicTraitImplementation {
-                                    concrete, if item.generics.is_empty() { Vec[Type]::new() } else { clone_codegen_types(concrete.generics) }
-                                })
+                                    concrete, if item.generics.is_empty() {
+                                        Vec[Type]::new()
+                                    } else {
+                                        clone_codegen_types(concrete.generics)
+                                    }
+                                }
+                            )
                         }
-                        None => {}
+                        None => {
+                        }
                     }
                 }
             }
@@ -1168,13 +1178,17 @@ fn dynamic_trait_binding(target: frozen Type, parameters: frozen Vec[Type], trai
                             ret Option[ImplMethodBinding]::None
                         }
                     }
-                    None => { ret Option[ImplMethodBinding]::None }
+                    None => {
+                        ret Option[ImplMethodBinding]::None
+                    }
                 }
                 index += 1_usize
             }
             ret Option[ImplMethodBinding]::Some(binding)
         }
-        None => { ret Option[ImplMethodBinding]::None }
+        None => {
+            ret Option[ImplMethodBinding]::None
+        }
     }
 }
 
@@ -2861,7 +2875,9 @@ fn collect_nested_generic_call(out: mut Vec[GenericCall], seen: usize,
 // calls so their nested calls and ownership types reach program support too.
 fn collect_dynamic_generic_calls(out: mut Vec[GenericCall], seen: usize, directives: frozen Vec[Directive],
     concrete: frozen Type, dynamic: frozen Type,) ->() {
-    if concrete.generics.is_empty() { ret() }
+    if concrete.generics.is_empty() {
+        ret()
+    }
     for directive in directives {
         match directive {
             Directive::Impl(item) => {
@@ -2876,10 +2892,12 @@ fn collect_dynamic_generic_calls(out: mut Vec[GenericCall], seen: usize, directi
                             }
                         }
                     }
-                    None => {}
+                    None => {
+                    }
                 }
             }
-            _ => {}
+            _ => {
+            }
         }
     }
 }
